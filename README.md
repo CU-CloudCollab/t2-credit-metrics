@@ -26,6 +26,20 @@ docker run -it -e AWS_ACCESS_KEY_ID=[ID] -e AWS_SECRET_ACCESS_KEY=[KEY] t2-metri
 ```
 
 
+## Development
+
+To lint code with flake8:
+
+```
+docker run -it --rm -v ~/.aws:/root/.aws t2-metrics ./lint_code.sh
+```
+
+To run unit tests:
+
+```
+docker run -it --rm -v ~/.aws:/root/.aws t2-metrics ./run_tests.sh
+```
+
 
 ## Example output
 
