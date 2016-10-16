@@ -25,8 +25,11 @@ from tabulate import tabulate
 
 def main(argv):
     # Settings
+    NAMESPACE = 'AWS/EC2'
     METRICS = ['CPUUtilization', 'CPUCreditUsage', 'CPUCreditBalance']
     N_DAYS_TO_REPORT = 3
+    HOURLY_PERIOD = 60*60
+    DAILY_PERIOD = 60*60*24
     T2_INSTANCE_DEFAULTS = get_t2_defaults()
 
     # setup AWS environment
@@ -51,8 +54,6 @@ def main(argv):
     # setup filters
     start_time = datetime.datetime.now() - datetime.timedelta(days=N_DAYS_TO_REPORT)
     end_time = datetime.datetime.now()
-    hourly_period = 60*60
-    daily_period = 60*60*24
     target_dimension_filter = [
         {
             'Name': 'InstanceId',
@@ -61,12 +62,26 @@ def main(argv):
     ]
 
     # get a merged set of metrics by day + add computed items
-    daily_df = get_merged_metrics_df(METRICS, cw_client, target_dimension_filter, daily_period, start_time, end_time)
+    daily_df = get_merged_metric_df(cw_client,
+                                    NAMESPACE,
+                                    METRICS,
+                                    target_dimension_filter,
+                                    DAILY_PERIOD,
+                                    start_time,
+                                    end_time)
+
     daily_df['Credits_Earned_Per_Day'] = instance_defaults['cpu_credits_per_hour'] * 24
     daily_df['Credit_Net'] = daily_df['Credits_Earned_Per_Day'] - daily_df['CPUCreditUsage_Sum']
 
     # get a merged set of metrics by hour + add computed items
-    hourly_df = get_merged_metrics_df(METRICS, cw_client, target_dimension_filter, hourly_period, start_time, end_time)
+    hourly_df = get_merged_metric_df(cw_client,
+                                     NAMESPACE,
+                                     METRICS,
+                                     target_dimension_filter,
+                                     HOURLY_PERIOD,
+                                     start_time,
+                                     end_time)
+
     hourly_df['Credits_Earned_Per_Hour'] = instance_defaults['cpu_credits_per_hour']
     hourly_df['Credit_Net'] = hourly_df['Credits_Earned_Per_Hour'] - hourly_df['CPUCreditUsage_Sum']
 
@@ -146,7 +161,7 @@ def get_t2_defaults():
     return defaults
 
 
-def get_merged_metrics_df(metrics, cw_client, dimension_filters, period, start_time, end_time):
+def get_merged_metric_df(cw_client, namespace, metrics, dimension_filters, period, start_time, end_time):
     """
     Get a merged dataframe for a set of specified metrics
 
@@ -168,8 +183,9 @@ def get_merged_metrics_df(metrics, cw_client, dimension_filters, period, start_t
 
     for metric in metrics:
         dataframes.append(
-            get_ec2_metric_dataframe(
+            get_metric_df(
                 cw_client,
+                namespace,
                 metric,
                 dimension_filters,
                 period,
@@ -181,7 +197,7 @@ def get_merged_metrics_df(metrics, cw_client, dimension_filters, period, start_t
     return pandas.concat(dataframes, axis=1)
 
 
-def get_ec2_metric_dataframe(cw_client, metric_name, dimension_filters, period, start_time, end_time):
+def get_metric_df(cw_client, namespace, metric_name, dimension_filters, period, start_time, end_time):
     """
     Get an EC2 metric and convert it to a pandas dataframe w/ timeseries index
 
@@ -200,7 +216,7 @@ def get_ec2_metric_dataframe(cw_client, metric_name, dimension_filters, period, 
     """
     # get the CW response
     metric_response = cw_client.get_metric_statistics(
-        Namespace='AWS/EC2',
+        Namespace=namespace,
         MetricName=metric_name,
         Dimensions=dimension_filters,
         Period=period,
