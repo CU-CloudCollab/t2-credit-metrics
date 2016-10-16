@@ -166,9 +166,11 @@ def get_merged_metric_df(cw_client, namespace, metrics, dimension_filters, perio
     Get a merged dataframe for a set of specified metrics
 
     Args:
+        * cw_client (botocore.client.CloudWatch): Boto3 CloudWatch client
+        * namespace (str): AWS Metric namespace
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/aws-namespaces.html
         * metrics (list of str): List of metric names
             see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
-        * cw_client (botocore.client.CloudWatch): Boto3 CloudWatch client
         * dimension_filters (list of dict): List of Name/Value pairs for filtering metrics (e.g., instance id)
             see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
         * period (int): Grain of each observation (in seconds - e.g., 60 is one observation per minute)
@@ -203,6 +205,8 @@ def get_metric_df(cw_client, namespace, metric_name, dimension_filters, period, 
 
     Args:
         * cw_client (botocore.client.CloudWatch): Boto3 CloudWatch client
+        * namespace (str): AWS Metric namespace
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/aws-namespaces.html
         * metric_name (str): Cloudwatch MetricName
             see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
         * dimension_filters (list of dict): List of Name/Value pairs for filtering metrics (e.g., instance id)
