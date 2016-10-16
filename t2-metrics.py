@@ -35,8 +35,7 @@ def main(argv):
     ec2_client = boto3.client('ec2')
 
     if len(argv) < 2:
-        print 'Please specify instance id (e.g., python t2-metrics.py i-1701a887)'
-        sys.exit(1)
+        raise ValueError("Please specify instance id (e.g., python t2-metrics.py i-1701a887")
 
     # get metadata about requested instance
     requested_instance = argv[1]
@@ -44,9 +43,7 @@ def main(argv):
 
     # This only makes sense for t2 instances, so check that
     if requested_instance_type not in T2_INSTANCE_DEFAULTS:
-        print 'Instance does not appear to be in the t2 family'
-        print 'Instance type: %s' % (requested_instance_type)
-        sys.exit(1)
+        raise ValueError("Instance type %s doesn't appear to be in the t2 family" % (requested_instance_type))
 
     # get instance defaults
     instance_defaults = T2_INSTANCE_DEFAULTS[requested_instance_type]
