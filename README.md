@@ -1,6 +1,6 @@
 # T2 Metrics Reporting Utility
 
-## Purpose(s): 
+## Purpose(s):
 * Basic POC for getting cloudwatch metrics out of API and into Pandas for use in reporting/analysis
 * Implement report for monitoring T2 instance utilization + credit use metrics
 
@@ -16,15 +16,29 @@ docker build -t t2-metrics .
 Next, use the container to run a report for a specfic t2 instance:
 
 ```
-docker run -it --rm -v ~/.aws:/root/.aws t2-metrics python t2-metrics.py i-4419cfd7
+docker run -it --rm -v ~/.aws:/root/.aws t2-metrics python t2_metrics.py i-4419cfd7
 ```
 
 Note - this command passes in your .aws folder so that commands can use your credential sets.  You can also pass in credentials as environment variables:
 
 ```
-docker run -it -e AWS_ACCESS_KEY_ID=[ID] -e AWS_SECRET_ACCESS_KEY=[KEY] t2-metrics python t2-metrics.py i-4419cfd7
+docker run -it -e AWS_ACCESS_KEY_ID=[ID] -e AWS_SECRET_ACCESS_KEY=[KEY] t2-metrics python t2_metrics.py i-4419cfd7
 ```
 
+
+## Development
+
+To lint code with flake8:
+
+```
+docker run -it --rm -v ~/.aws:/root/.aws t2-metrics ./lint_code.sh
+```
+
+To run unit tests:
+
+```
+docker run -it --rm -v ~/.aws:/root/.aws t2-metrics ./run_tests.sh
+```
 
 
 ## Example output
