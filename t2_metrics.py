@@ -316,35 +316,17 @@ def get_instance_launch_time(ec2_client, instance_id):
 
 def get_instance_ttl_hours(instance_defaults, target_pct, credit_balance):
     """
-    Estimate burstable hours given base cpu rate, percentage level, credit balance, and credit aging
+    Estimate burstable minutes given base cpu rate, percentage level, credit balance, and credit aging
+
+    Args:
+        * instance_defaults (dict): Instance defaults for the specified instance
+        * target_pct (Decimal): The cpu usage rate for which we should estimate Time-to-live
+        * credit_balance (Decimal): The existing credit balance to use for estimating Time-to-live
     """
     if instance_defaults['base_cpu_performance'] < target_pct:
         return (credit_balance / (target_pct * 60)) * 60
 
     return '-'
-
-
-def add_prior_day_totals(hourly_df, column_name):
-    """
-    For each datapoint, if a value exists for the prior day, add it as a new column.  Will be used for
-    better modeling of credit loss.
-
-    REVIEW: there is likely some more functional/idiomatic way to do this with Pandas - not finding it now, though
-
-    Args:
-        * hourly_df (Pandas.DataFrame): base hourly_df w/ Credit_Net
-        * column_name (str): Name of new column to add
-
-    Returns:
-        * Pandas.DataFrame.  Dataframe with additional column
-    """
-    hourly_df[column_name] = '-'
-    for ix, row in hourly_df.iterrows():
-        prior_day_index = ix - datetime.timedelta(hours=24)
-        if prior_day_index in hourly_df.index:
-            hourly_df.ix[ix, column_name] = hourly_df.ix[prior_day_index]['Credit_Net']
-
-    return hourly_df
 
 
 def get_credit_aging_dict(hourly_df, launch_dt):
@@ -363,38 +345,38 @@ def get_credit_aging_dict(hourly_df, launch_dt):
     """
     current_dt = datetime.datetime.now()
     aging = [OrderedDict([
-        ('21-24 Hours (expiring soon)', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(hours=24)) &
-                        (hourly_df.index <= current_dt - datetime.timedelta(hours=21)) &
+        ('20-24 Hours (expiring soon)', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=24*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=20*60)) &
                         (hourly_df.index >= launch_dt) &
                         (hourly_df['Credit_Net'] > 0)
                       ]['Credit_Net'].sum()),
-        ('17-20 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(hours=20)) &
-                        (hourly_df.index <= current_dt - datetime.timedelta(hours=17)) &
+        ('16-20 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=20*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=16*60)) &
                         (hourly_df.index >= launch_dt) &
                         (hourly_df['Credit_Net'] > 0)
                       ]['Credit_Net'].sum()),
-        ('13-16 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(hours=16)) &
-                        (hourly_df.index <= current_dt - datetime.timedelta(hours=13)) &
+        ('12-16 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=16*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=12*60)) &
                         (hourly_df.index >= launch_dt) &
                         (hourly_df['Credit_Net'] > 0)
                       ]['Credit_Net'].sum()),
-        ('9-12 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(hours=12)) &
-                        (hourly_df.index <= current_dt - datetime.timedelta(hours=9)) &
+        ('8-12 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=12*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=8*60)) &
                         (hourly_df.index >= launch_dt) &
                         (hourly_df['Credit_Net'] > 0)
                       ]['Credit_Net'].sum()),
-        ('5-8 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(hours=8)) &
-                        (hourly_df.index <= current_dt - datetime.timedelta(hours=5)) &
+        ('4-8 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=8*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=4*60)) &
                         (hourly_df.index >= launch_dt) &
                         (hourly_df['Credit_Net'] > 0)
                       ]['Credit_Net'].sum()),
         ('0-4 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(hours=4)) &
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=4*60)) &
                         (hourly_df.index >= launch_dt) &
                         (hourly_df['Credit_Net'] > 0)
                      ]['Credit_Net'].sum()),

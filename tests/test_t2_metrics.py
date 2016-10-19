@@ -1,3 +1,4 @@
+import collections
 import datetime
 import unittest
 
@@ -19,7 +20,12 @@ class TestT2Metrics(unittest.TestCase):
         ec2_stubber = Stubber(ec2_client)
         self.stub_ec2_response(ec2_stubber)
         ec2_stubber.activate()
-        self.ec2_describe_instance_response = t2_metrics.get_instance_type(ec2_client, '12345')
+        self.get_instance_type_response = t2_metrics.get_instance_type(ec2_client, '12345')
+
+        # get_instance_launch_time() test data
+        self.stub_ec2_response(ec2_stubber)
+        ec2_stubber.activate()
+        self.get_instance_launch_time_response = t2_metrics.get_instance_launch_time(ec2_client, '12345')
 
         # get_t2_defaults() test data
         self.t2_defaults = t2_metrics.get_t2_defaults()
@@ -70,8 +76,15 @@ class TestT2Metrics(unittest.TestCase):
         get_instance_type() should return expected value from stubbed response
         """
 
-        assert_equals(self.ec2_describe_instance_response,
+        assert_equals(self.get_instance_type_response,
                       't2.micro')
+
+    def test_get_instance_launch_time(self):
+        """
+        get_instance_launch_time() should return expected value from stubbed response
+        """
+        assert_equals(self.get_instance_launch_time_response,
+                      datetime.datetime(2015, 1, 1))
 
     def test_t2_defaults_item_count(self):
         """
@@ -175,13 +188,181 @@ class TestT2Metrics(unittest.TestCase):
         get_merged_metric_df() should return observation measures merged on datetime index
         """
         for index, metric_row in self.merged_metric_df_response.iterrows():
-            metric_row['CPUCreditUsage_Average'] == metric_row['CPUCreditBalance_Average']
-            metric_row['CPUCreditUsage_Maximum'] == metric_row['CPUCreditBalance_Maximum']
-            metric_row['CPUCreditUsage_Minimum'] == metric_row['CPUCreditBalance_Minimum']
-            metric_row['CPUCreditUsage_SampleCount'] == metric_row['CPUCreditBalance_SampleCount']
-            metric_row['CPUCreditUsage_Sum'] == metric_row['CPUCreditBalance_Sum']
-            metric_row['CPUCreditUsage_Timestamp'] == metric_row['CPUCreditBalance_Timestamp']
-            metric_row['CPUCreditUsage_Unit'] == metric_row['CPUCreditBalance_Unit']
+            assert_equals(metric_row['CPUCreditUsage_Average'], metric_row['CPUCreditBalance_Average'])
+            assert_equals(metric_row['CPUCreditUsage_Maximum'], metric_row['CPUCreditBalance_Maximum'])
+            assert_equals(metric_row['CPUCreditUsage_Minimum'], metric_row['CPUCreditBalance_Minimum'])
+            assert_equals(metric_row['CPUCreditUsage_SampleCount'], metric_row['CPUCreditBalance_SampleCount'])
+            assert_equals(metric_row['CPUCreditUsage_Sum'], metric_row['CPUCreditBalance_Sum'])
+            assert_equals(metric_row['CPUCreditUsage_Timestamp'], metric_row['CPUCreditBalance_Timestamp'])
+            assert_equals(metric_row['CPUCreditUsage_Unit'], metric_row['CPUCreditBalance_Unit'])
+
+    def test_get_instance_ttl_hours_calc(self):
+        """
+        get_instance_ttl_hours() should calculate expected values for given inputs
+        """
+        mock_t2_instance = {
+            'initial_cpu_credit': 30,
+            'cpu_credits_per_hour': 12,
+            'base_cpu_performance': .2,
+            'maximum_credit_balance': 288
+        }
+
+        assert_equals(t2_metrics.get_instance_ttl_hours(mock_t2_instance, .4, 300), 750)
+        assert_equals(t2_metrics.get_instance_ttl_hours(mock_t2_instance, .6, 270), 450)
+
+    def test_get_instance_ttl_hours_unlimited(self):
+        """
+        get_instance_ttl_hours() should return '-' if base cpu rate is >= target
+        """
+        mock_t2_instance = {
+            'initial_cpu_credit': 30,
+            'cpu_credits_per_hour': 12,
+            'base_cpu_performance': .6,
+            'maximum_credit_balance': 288
+        }
+
+        assert_equals(t2_metrics.get_instance_ttl_hours(mock_t2_instance, .4, 300), '-')
+        assert_equals(t2_metrics.get_instance_ttl_hours(mock_t2_instance, .6, 270), '-')
+
+    def test_get_credit_aging_dict_calc(self):
+        """
+        get_credit_aging_dict() should calculate expected values for given inputs
+        """
+
+        test_set = [
+            {
+                'Timestamp': datetime.datetime.now(),
+                'Credit_Net': 5
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=239),
+                'Credit_Net': 7
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=240),
+                'Credit_Net': 9
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=479),
+                'Credit_Net': 11
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=480),
+                'Credit_Net': 13
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=719),
+                'Credit_Net': 15
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=720),
+                'Credit_Net': 17
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=959),
+                'Credit_Net': 19
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=960),
+                'Credit_Net': 21
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=1199),
+                'Credit_Net': 23
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=1200),
+                'Credit_Net': 25
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=1439),
+                'Credit_Net': 27
+            }
+        ]
+
+        test_df = pandas.DataFrame.from_dict(test_set)
+        test_df.set_index(pandas.DatetimeIndex(test_df['Timestamp']), inplace=True)
+
+        test_launch_dt = datetime.datetime.now() - datetime.timedelta(hours=25)
+        response = t2_metrics.get_credit_aging_dict(test_df, test_launch_dt)
+
+        assert_equals(isinstance(response[0], collections.OrderedDict), True)
+        assert_equals(response[0]['0-4 Hours'], 12)
+        assert_equals(response[0]['4-8 Hours'], 20)
+        assert_equals(response[0]['8-12 Hours'], 28)
+        assert_equals(response[0]['12-16 Hours'], 36)
+        assert_equals(response[0]['16-20 Hours'], 44)
+        assert_equals(response[0]['20-24 Hours (expiring soon)'], 52)
+
+    def test_get_credit_aging_dict_pre_launch_credits(self):
+        """
+        get_credit_aging_dict() should not count credits if they occurred prior to last launch
+        """
+
+        test_set = [
+            {
+                'Timestamp': datetime.datetime.now(),
+                'Credit_Net': 5
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=239),
+                'Credit_Net': 7
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=240),
+                'Credit_Net': 9
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=479),
+                'Credit_Net': 11
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=480),
+                'Credit_Net': 13
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=719),
+                'Credit_Net': 15
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=720),
+                'Credit_Net': 17
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=959),
+                'Credit_Net': 19
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=960),
+                'Credit_Net': 21
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=1199),
+                'Credit_Net': 23
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=1200),
+                'Credit_Net': 25
+            },
+            {
+                'Timestamp': datetime.datetime.now() - datetime.timedelta(minutes=1439),
+                'Credit_Net': 27
+            }
+        ]
+
+        test_df = pandas.DataFrame.from_dict(test_set)
+        test_df.set_index(pandas.DatetimeIndex(test_df['Timestamp']), inplace=True)
+
+        test_launch_dt = datetime.datetime.now() - datetime.timedelta(minutes=961)
+        response = t2_metrics.get_credit_aging_dict(test_df, test_launch_dt)
+
+        assert_equals(isinstance(response[0], collections.OrderedDict), True)
+        assert_equals(response[0]['0-4 Hours'], 12)
+        assert_equals(response[0]['4-8 Hours'], 20)
+        assert_equals(response[0]['8-12 Hours'], 28)
+        assert_equals(response[0]['12-16 Hours'], 36)
+        assert_equals(response[0]['16-20 Hours'], 21)  # datapoint > 960 should be excluded
+        assert_equals(response[0]['20-24 Hours (expiring soon)'], 0)
 
     def stub_cloudwatch_response(self, cw_stubber, metric):
         """
