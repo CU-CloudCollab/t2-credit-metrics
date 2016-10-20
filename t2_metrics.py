@@ -86,8 +86,8 @@ def t2_metrics_report(requested_instance, aws_clients, n_days_to_report=5):
     hourly_df = build_hourly_t2_df(aws_clients['cw_client'], namespace, metrics, target_dimension_filter, HOURLY_PERIOD,
                                    instance_profile['instance_defaults'], start_time, end_time)
 
-    daily_df = build_hourly_t2_df(aws_clients['cw_client'], namespace, metrics, target_dimension_filter, DAILY_PERIOD,
-                                  instance_profile['instance_defaults'], start_time, end_time)
+    daily_df = build_daily_t2_df(aws_clients['cw_client'], namespace, metrics, target_dimension_filter, DAILY_PERIOD,
+                                 instance_profile['instance_defaults'], start_time, end_time)
 
     # Generate aging table data
     aging_dict = get_credit_aging_dict(hourly_df, instance_profile['instance_launch_dt'])
