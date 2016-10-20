@@ -28,40 +28,52 @@ def main(argv):
     if len(argv) < 2:
         raise ValueError("Please specify instance id (e.g., python t2-metrics.py i-1701a887")
 
-    t2_metrics_report(argv[1])
+    # setup AWS environment and clients
+    os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+    aws_clients = {
+        'cw_client': boto3.client('cloudwatch'),
+        'ec2_client': boto3.client('ec2')
+    }
+
+    # Run t2 metrics report.  Placeholder for additional reports by argument
+    print t2_metrics_report(argv[1], aws_clients)
 
 
-def t2_metrics_report(requested_instance):
-    # Settings
-    NAMESPACE = 'AWS/EC2'
-    METRICS = ['CPUUtilization', 'CPUCreditUsage', 'CPUCreditBalance']
-    N_DAYS_TO_REPORT = 5
+def t2_metrics_report(requested_instance, aws_clients, n_days_to_report=5):
+    """
+    Build input data for requested instance + print the t2 metrics reports
+
+    Args:
+        * requested_instance (str): Amazon instance ID
+        * aws_clients (dict): EC2 and Cloudwatch Clients
+            keys: cw_client, ec2_client
+    """
+    # Constants/Definitions
     HOURLY_PERIOD = 60*60
     DAILY_PERIOD = 60*60*24
-    T2_INSTANCE_DEFAULTS = get_t2_defaults()
 
-    # setup AWS environment
-    os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
-    cw_client = boto3.client('cloudwatch')
-    ec2_client = boto3.client('ec2')
+    # Settings
+    namespace = 'AWS/EC2'
+    metrics = ['CPUUtilization', 'CPUCreditUsage', 'CPUCreditBalance']
+    t2_instance_defaults = get_t2_defaults()
 
     # get metadata about requested instance
-    requested_instance_type = get_instance_type(ec2_client, requested_instance)
+    requested_instance_type = get_instance_type(aws_clients['ec2_client'], requested_instance)
 
     # This only makes sense for t2 instances, so check that
-    if requested_instance_type not in T2_INSTANCE_DEFAULTS:
+    if requested_instance_type not in t2_instance_defaults:
         raise ValueError("Instance type %s doesn't appear to be in the t2 family" % (requested_instance_type))
 
     # build instance profile dict
     instance_profile = {
         'instance_id': requested_instance,
-        'instance_defaults': T2_INSTANCE_DEFAULTS[requested_instance_type],
+        'instance_defaults': t2_instance_defaults[requested_instance_type],
         'instance_type': requested_instance_type,
-        'instance_launch_dt': get_instance_launch_time(ec2_client, requested_instance)
+        'instance_launch_dt': get_instance_launch_time(aws_clients['ec2_client'], requested_instance)
     }
 
     # setup filters
-    start_time = datetime.datetime.now() - datetime.timedelta(days=N_DAYS_TO_REPORT)
+    start_time = datetime.datetime.now() - datetime.timedelta(days=n_days_to_report)
     end_time = datetime.datetime.now()
     target_dimension_filter = [
         {
@@ -71,67 +83,80 @@ def t2_metrics_report(requested_instance):
     ]
 
     # build dataframes
-    hourly_df = build_hourly_df(cw_client, NAMESPACE, METRICS, target_dimension_filter, HOURLY_PERIOD,
-                                instance_profile['instance_defaults'], start_time, end_time)
+    hourly_df = build_hourly_t2_df(aws_clients['cw_client'], namespace, metrics, target_dimension_filter, HOURLY_PERIOD,
+                                   instance_profile['instance_defaults'], start_time, end_time)
 
-    daily_df = build_hourly_df(cw_client, NAMESPACE, METRICS, target_dimension_filter, DAILY_PERIOD,
-                               instance_profile['instance_defaults'], start_time, end_time)
+    daily_df = build_hourly_t2_df(aws_clients['cw_client'], namespace, metrics, target_dimension_filter, DAILY_PERIOD,
+                                  instance_profile['instance_defaults'], start_time, end_time)
 
     # Generate aging table data
     aging_dict = get_credit_aging_dict(hourly_df, instance_profile['instance_launch_dt'])
 
     # output the report
-    print_t2_metrics_report(instance_profile, hourly_df, daily_df, aging_dict)
+    return build_t2_metrics_report_output(instance_profile, hourly_df, daily_df, aging_dict)
 
 
-def print_t2_metrics_report(instance_profile, hourly_df, daily_df, aging_dict):
+def build_t2_metrics_report_output(instance_profile, hourly_df, daily_df, aging_dict):
     """
-    Print the t2 metrics report
+    Build output of t2 metrics report
+
+    Args:
+        * instance_profile (dict): Dictionary of information about requested instance
+            keys: instance_id, instance_type, instance_defaults, instance_launch_dt
+        * hourly_df (pandas.DataFrame): T2 metrics dataframe at hourly grain
+        * daily_df (pandas.DataFrame): T2 metrics dataframe at daily grain
+        * aging_dict (OrderedDict): Ordered dictionary of credit aging values
+
+    Returns:
+        * Str. String value of report
     """
     instance_defaults = instance_profile['instance_defaults']
+    report = ''
 
     # print report
-    print ''
-    print 'Instance ID: %s' % (instance_profile['instance_id'])
-    print 'Instance Type: %s' % (instance_profile['instance_type'])
-    print 'Launched: %s' % (str(instance_profile['instance_launch_dt']))
-    print 'Base CPU: %d%%' % (instance_defaults['base_cpu_performance'] * 100)
-    print 'Initial Burst Credits: %d' % (instance_defaults['initial_cpu_credit'])
-    print 'Burst Credits Earned per Hour: %s' % (instance_defaults['cpu_credits_per_hour'])
-    print 'Maximum Credit Balance: %s' % (instance_defaults['maximum_credit_balance'])
+    report += '\n'
+    report += 'Instance ID: %s\n' % (instance_profile['instance_id'])
+    report += 'Instance Type: %s\n' % (instance_profile['instance_type'])
+    report += 'Launched: %s\n' % (str(instance_profile['instance_launch_dt']))
+    report += 'Base CPU: %d%%\n' % (instance_defaults['base_cpu_performance'] * 100)
+    report += 'Initial Burst Credits: %d\n' % (instance_defaults['initial_cpu_credit'])
+    report += 'Burst Credits Earned per Hour: %s\n' % (instance_defaults['cpu_credits_per_hour'])
+    report += 'Maximum Credit Balance: %s\n' % (instance_defaults['maximum_credit_balance'])
 
-    print ''
-    print 'Summary by Hour:'
-    print tabulate(hourly_df[['CPU_Average',
-                              'Credits_Used',
-                              'Credit_Net',
-                              'CrBalance_Min',
-                              'CrBalance_Max',
-                              'Burst_TTL_40',
-                              'Burst_TTL_60',
-                              'Burst_TTL_80',
-                              'Burst_TTL_100'
-                              ]], headers='keys', tablefmt='psql', floatfmt=".2f")
+    report += '\n'
+    report += 'Summary by Hour:\n'
+    report += tabulate(hourly_df[['CPU_Average',
+                                  'Credits_Used',
+                                  'Credit_Net',
+                                  'CrBalance_Min',
+                                  'CrBalance_Max',
+                                  'Burst_TTL_40',
+                                  'Burst_TTL_60',
+                                  'Burst_TTL_80',
+                                  'Burst_TTL_100'
+                                  ]], headers='keys', tablefmt='psql', floatfmt=".2f") + '\n'
 
-    print 'Burst Time-to-live (TTL) = Minutes at specified CPU utilization (40, 60, 80, 100) until \
-burstable CPU credits will be expended.  Note: This calculation doesn not include initial credits.'
+    report += 'Burst Time-to-live (TTL) = Minutes at specified CPU utilization (40, 60, 80, 100) until \
+burstable CPU credits will be expended.  Note: This calculation doesn not include initial credits.\n'
 
-    print ''
-    print 'Estimated earned burst credits by age (expire after 24 hours)'
-    print tabulate(aging_dict,  headers='keys', tablefmt='psql', floatfmt=".2f")
+    report += '\n'
+    report += 'Estimated earned burst credits by age (expire after 24 hours)\n'
+    report += tabulate(aging_dict,  headers='keys', tablefmt='psql', floatfmt=".2f") + '\n'
 
-    print ''
-    print 'Summary by day:'
-    print tabulate(daily_df[['CPU_Average',
-                             'Credits_Used',
-                             'Credit_Net',
-                             'CrBalance_Min',
-                             'CrBalance_Max',
-                             ]], headers='keys', tablefmt='psql', floatfmt=".2f")
+    report += '\n'
+    report += 'Summary by day:\n'
+    report += tabulate(daily_df[['CPU_Average',
+                                 'Credits_Used',
+                                 'Credit_Net',
+                                 'CrBalance_Min',
+                                 'CrBalance_Max',
+                                 ]], headers='keys', tablefmt='psql', floatfmt=".2f")
+
+    return report
 
 
-def build_hourly_df(cw_client, namespace, metrics, target_dimension_filter, hourly_period, instance_defaults,
-                    start_time, end_time):
+def build_hourly_t2_df(cw_client, namespace, metrics, target_dimension_filter, hourly_period, instance_defaults,
+                       start_time, end_time):
     """
     Get a metrics dataframe at hourly grain
 
@@ -177,8 +202,8 @@ def build_hourly_df(cw_client, namespace, metrics, target_dimension_filter, hour
     return hourly_df
 
 
-def build_daily_df(cw_client, namespace, metrics, target_dimension_filter, daily_period, instance_defaults,
-                   start_time, end_time):
+def build_daily_t2_df(cw_client, namespace, metrics, target_dimension_filter, daily_period, instance_defaults,
+                      start_time, end_time):
     """
     Get a metrics dataframe at daily grain
 
@@ -219,6 +244,77 @@ def build_daily_df(cw_client, namespace, metrics, target_dimension_filter, daily
     }, inplace=True)
 
     return daily_df
+
+
+def get_instance_ttl_hours(instance_defaults, target_pct, credit_balance):
+    """
+    Estimate burstable minutes given base cpu rate, percentage level, credit balance, and credit aging
+
+    Args:
+        * instance_defaults (dict): Instance defaults for the specified instance
+        * target_pct (Decimal): The cpu usage rate for which we should estimate Time-to-live
+        * credit_balance (Decimal): The existing credit balance to use for estimating Time-to-live
+    """
+    if instance_defaults['base_cpu_performance'] < target_pct:
+        return (credit_balance / (target_pct * 60)) * 60
+
+    return '-'
+
+
+def get_credit_aging_dict(hourly_df, launch_dt):
+    """
+    Given an hourly dataframe, generate an ordered dictionary of estimated aging bins
+    Purpose: see if an unusual number of credits will be expiring at any point in time
+
+    Note: restarting instance clears out credits -> no accumulation afterward
+
+    Args:
+        * hourly_df (Pandas.DataFrame): dataframe for hourly credit net totals
+        * launch_dt (datetime.datetime): Datetime for when instance was launched
+
+    Returns:
+        * collections.OrderedDict.  Ordered dictionary of aging bins
+    """
+    current_dt = datetime.datetime.now()
+    aging = [OrderedDict([
+        ('20-24 Hours (expiring soon)', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=24*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=20*60)) &
+                        (hourly_df.index >= launch_dt) &
+                        (hourly_df['Credit_Net'] > 0)
+                      ]['Credit_Net'].sum()),
+        ('16-20 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=20*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=16*60)) &
+                        (hourly_df.index >= launch_dt) &
+                        (hourly_df['Credit_Net'] > 0)
+                      ]['Credit_Net'].sum()),
+        ('12-16 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=16*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=12*60)) &
+                        (hourly_df.index >= launch_dt) &
+                        (hourly_df['Credit_Net'] > 0)
+                      ]['Credit_Net'].sum()),
+        ('8-12 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=12*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=8*60)) &
+                        (hourly_df.index >= launch_dt) &
+                        (hourly_df['Credit_Net'] > 0)
+                      ]['Credit_Net'].sum()),
+        ('4-8 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=8*60)) &
+                        (hourly_df.index < current_dt - datetime.timedelta(minutes=4*60)) &
+                        (hourly_df.index >= launch_dt) &
+                        (hourly_df['Credit_Net'] > 0)
+                      ]['Credit_Net'].sum()),
+        ('0-4 Hours', hourly_df.ix[
+                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=4*60)) &
+                        (hourly_df.index >= launch_dt) &
+                        (hourly_df['Credit_Net'] > 0)
+                     ]['Credit_Net'].sum()),
+    ])]
+
+    return aging
 
 
 def get_t2_defaults():
@@ -385,76 +481,6 @@ def get_instance_launch_time(ec2_client, instance_id):
     """
     return ec2_client.describe_instances(InstanceIds=[instance_id])['Reservations'][0]['Instances'][0]['LaunchTime']
 
-
-def get_instance_ttl_hours(instance_defaults, target_pct, credit_balance):
-    """
-    Estimate burstable minutes given base cpu rate, percentage level, credit balance, and credit aging
-
-    Args:
-        * instance_defaults (dict): Instance defaults for the specified instance
-        * target_pct (Decimal): The cpu usage rate for which we should estimate Time-to-live
-        * credit_balance (Decimal): The existing credit balance to use for estimating Time-to-live
-    """
-    if instance_defaults['base_cpu_performance'] < target_pct:
-        return (credit_balance / (target_pct * 60)) * 60
-
-    return '-'
-
-
-def get_credit_aging_dict(hourly_df, launch_dt):
-    """
-    Given an hourly dataframe, generate an ordered dictionary of estimated aging bins
-    Purpose: see if an unusual number of credits will be expiring at any point in time
-
-    Note: restarting instance clears out credits -> no accumulation afterward
-
-    Args:
-        * hourly_df (Pandas.DataFrame): dataframe for hourly credit net totals
-        * launch_dt (datetime.datetime): Datetime for when instance was launched
-
-    Returns:
-        * collections.OrderedDict.  Ordered dictionary of aging bins
-    """
-    current_dt = datetime.datetime.now()
-    aging = [OrderedDict([
-        ('20-24 Hours (expiring soon)', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=24*60)) &
-                        (hourly_df.index < current_dt - datetime.timedelta(minutes=20*60)) &
-                        (hourly_df.index >= launch_dt) &
-                        (hourly_df['Credit_Net'] > 0)
-                      ]['Credit_Net'].sum()),
-        ('16-20 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=20*60)) &
-                        (hourly_df.index < current_dt - datetime.timedelta(minutes=16*60)) &
-                        (hourly_df.index >= launch_dt) &
-                        (hourly_df['Credit_Net'] > 0)
-                      ]['Credit_Net'].sum()),
-        ('12-16 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=16*60)) &
-                        (hourly_df.index < current_dt - datetime.timedelta(minutes=12*60)) &
-                        (hourly_df.index >= launch_dt) &
-                        (hourly_df['Credit_Net'] > 0)
-                      ]['Credit_Net'].sum()),
-        ('8-12 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=12*60)) &
-                        (hourly_df.index < current_dt - datetime.timedelta(minutes=8*60)) &
-                        (hourly_df.index >= launch_dt) &
-                        (hourly_df['Credit_Net'] > 0)
-                      ]['Credit_Net'].sum()),
-        ('4-8 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=8*60)) &
-                        (hourly_df.index < current_dt - datetime.timedelta(minutes=4*60)) &
-                        (hourly_df.index >= launch_dt) &
-                        (hourly_df['Credit_Net'] > 0)
-                      ]['Credit_Net'].sum()),
-        ('0-4 Hours', hourly_df.ix[
-                        (hourly_df.index >= current_dt - datetime.timedelta(minutes=4*60)) &
-                        (hourly_df.index >= launch_dt) &
-                        (hourly_df['Credit_Net'] > 0)
-                     ]['Credit_Net'].sum()),
-    ])]
-
-    return aging
 
 if __name__ == "__main__":
     main(sys.argv)
