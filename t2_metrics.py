@@ -25,10 +25,17 @@ from tabulate import tabulate
 
 
 def main(argv):
+    if len(argv) < 2:
+        raise ValueError("Please specify instance id (e.g., python t2-metrics.py i-1701a887")
+
+    t2_metrics_report(argv[1])
+
+
+def t2_metrics_report(requested_instance):
     # Settings
     NAMESPACE = 'AWS/EC2'
     METRICS = ['CPUUtilization', 'CPUCreditUsage', 'CPUCreditBalance']
-    N_DAYS_TO_REPORT = 3
+    N_DAYS_TO_REPORT = 5
     HOURLY_PERIOD = 60*60
     DAILY_PERIOD = 60*60*24
     T2_INSTANCE_DEFAULTS = get_t2_defaults()
@@ -38,20 +45,20 @@ def main(argv):
     cw_client = boto3.client('cloudwatch')
     ec2_client = boto3.client('ec2')
 
-    if len(argv) < 2:
-        raise ValueError("Please specify instance id (e.g., python t2-metrics.py i-1701a887")
-
     # get metadata about requested instance
-    requested_instance = argv[1]
     requested_instance_type = get_instance_type(ec2_client, requested_instance)
-    requested_instance_launch_dt = get_instance_launch_time(ec2_client, requested_instance)
 
     # This only makes sense for t2 instances, so check that
     if requested_instance_type not in T2_INSTANCE_DEFAULTS:
         raise ValueError("Instance type %s doesn't appear to be in the t2 family" % (requested_instance_type))
 
-    # get instance defaults
-    instance_defaults = T2_INSTANCE_DEFAULTS[requested_instance_type]
+    # build instance profile dict
+    instance_profile = {
+        'instance_id': requested_instance,
+        'instance_defaults': T2_INSTANCE_DEFAULTS[requested_instance_type],
+        'instance_type': requested_instance_type,
+        'instance_launch_dt': get_instance_launch_time(ec2_client, requested_instance)
+    }
 
     # setup filters
     start_time = datetime.datetime.now() - datetime.timedelta(days=N_DAYS_TO_REPORT)
@@ -63,57 +70,31 @@ def main(argv):
         }
     ]
 
-    # get a merged set of metrics by day + add computed items
-    daily_df = get_merged_metric_df(cw_client,
-                                    NAMESPACE,
-                                    METRICS,
-                                    target_dimension_filter,
-                                    DAILY_PERIOD,
-                                    start_time,
-                                    end_time)
+    # build dataframes
+    hourly_df = build_hourly_df(cw_client, NAMESPACE, METRICS, target_dimension_filter, HOURLY_PERIOD,
+                                instance_profile['instance_defaults'], start_time, end_time)
 
-    daily_df['Credits_Earned_Per_Day'] = instance_defaults['cpu_credits_per_hour'] * 24
-    daily_df['Credit_Net'] = daily_df['Credits_Earned_Per_Day'] - daily_df['CPUCreditUsage_Sum']
-
-    # rename columns to save space on output
-    daily_df.rename(columns={
-        'CPUUtilization_Average': 'CPU_Average',
-        'CPUCreditUsage_Sum': 'Credits_Used',
-        'CPUCreditBalance_Minimum': 'CrBalance_Min',
-        'CPUCreditBalance_Maximum': 'CrBalance_Max'
-    }, inplace=True)
-
-    # get a merged set of metrics by hour + add computed items
-    hourly_df = get_merged_metric_df(cw_client,
-                                     NAMESPACE,
-                                     METRICS,
-                                     target_dimension_filter,
-                                     HOURLY_PERIOD,
-                                     start_time,
-                                     end_time)
-
-    hourly_df['Credits_Earned_Per_Hour'] = instance_defaults['cpu_credits_per_hour']
-    hourly_df['Credit_Net'] = hourly_df['Credits_Earned_Per_Hour'] - hourly_df['CPUCreditUsage_Sum']
-    hourly_df['Burst_TTL_40'] = get_instance_ttl_hours(instance_defaults, .4, hourly_df['CPUCreditBalance_Average'])
-    hourly_df['Burst_TTL_60'] = get_instance_ttl_hours(instance_defaults, .6, hourly_df['CPUCreditBalance_Average'])
-    hourly_df['Burst_TTL_80'] = get_instance_ttl_hours(instance_defaults, .8, hourly_df['CPUCreditBalance_Average'])
-    hourly_df['Burst_TTL_100'] = get_instance_ttl_hours(instance_defaults, 1, hourly_df['CPUCreditBalance_Average'])
-
-    # rename columns to save space on output
-    hourly_df.rename(columns={
-        'CPUUtilization_Average': 'CPU_Average',
-        'CPUCreditUsage_Sum': 'Credits_Used',
-        'CPUCreditBalance_Minimum': 'CrBalance_Min',
-        'CPUCreditBalance_Maximum': 'CrBalance_Max'
-    }, inplace=True)
+    daily_df = build_hourly_df(cw_client, NAMESPACE, METRICS, target_dimension_filter, DAILY_PERIOD,
+                               instance_profile['instance_defaults'], start_time, end_time)
 
     # Generate aging table data
-    aging = get_credit_aging_dict(hourly_df, requested_instance_launch_dt)
+    aging_dict = get_credit_aging_dict(hourly_df, instance_profile['instance_launch_dt'])
 
+    # output the report
+    print_t2_metrics_report(instance_profile, hourly_df, daily_df, aging_dict)
+
+
+def print_t2_metrics_report(instance_profile, hourly_df, daily_df, aging_dict):
+    """
+    Print the t2 metrics report
+    """
+    instance_defaults = instance_profile['instance_defaults']
+
+    # print report
     print ''
-    print 'Instance ID: %s' % (requested_instance)
-    print 'Instance Type: %s' % (requested_instance_type)
-    print 'Launched: %s' % (str(requested_instance_launch_dt))
+    print 'Instance ID: %s' % (instance_profile['instance_id'])
+    print 'Instance Type: %s' % (instance_profile['instance_type'])
+    print 'Launched: %s' % (str(instance_profile['instance_launch_dt']))
     print 'Base CPU: %d%%' % (instance_defaults['base_cpu_performance'] * 100)
     print 'Initial Burst Credits: %d' % (instance_defaults['initial_cpu_credit'])
     print 'Burst Credits Earned per Hour: %s' % (instance_defaults['cpu_credits_per_hour'])
@@ -137,7 +118,7 @@ burstable CPU credits will be expended.  Note: This calculation doesn not includ
 
     print ''
     print 'Estimated earned burst credits by age (expire after 24 hours)'
-    print tabulate(aging,  headers='keys', tablefmt='psql', floatfmt=".2f")
+    print tabulate(aging_dict,  headers='keys', tablefmt='psql', floatfmt=".2f")
 
     print ''
     print 'Summary by day:'
@@ -147,6 +128,97 @@ burstable CPU credits will be expended.  Note: This calculation doesn not includ
                              'CrBalance_Min',
                              'CrBalance_Max',
                              ]], headers='keys', tablefmt='psql', floatfmt=".2f")
+
+
+def build_hourly_df(cw_client, namespace, metrics, target_dimension_filter, hourly_period, instance_defaults,
+                    start_time, end_time):
+    """
+    Get a metrics dataframe at hourly grain
+
+    Args:
+        * cw_client (botocore.client.CloudWatch): Boto3 CloudWatch client
+        * namespace (str): AWS Metric namespace
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/aws-namespaces.html
+        * metrics (list of str): List of metric names
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
+        * dimension_filters (list of dict): List of Name/Value pairs for filtering metrics (e.g., instance id)
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
+        * period (int): Grain of each observation (in seconds - e.g., 60 is one observation per minute)
+        * start_time (datetime): Datetime of first observation in series
+        * end_time (datetime): Datetime of last observation in series
+
+    Returns:
+        pandas.DataFrame.  Metrics dataframe at hourly grain
+    """
+    # get a merged set of metrics by hour + add computed items
+    hourly_df = get_merged_metric_df(cw_client,
+                                     namespace,
+                                     metrics,
+                                     target_dimension_filter,
+                                     hourly_period,
+                                     start_time,
+                                     end_time)
+
+    hourly_df['Credits_Earned_Per_Hour'] = instance_defaults['cpu_credits_per_hour']
+    hourly_df['Credit_Net'] = hourly_df['Credits_Earned_Per_Hour'] - hourly_df['CPUCreditUsage_Sum']
+    hourly_df['Burst_TTL_40'] = get_instance_ttl_hours(instance_defaults, .4, hourly_df['CPUCreditBalance_Average'])
+    hourly_df['Burst_TTL_60'] = get_instance_ttl_hours(instance_defaults, .6, hourly_df['CPUCreditBalance_Average'])
+    hourly_df['Burst_TTL_80'] = get_instance_ttl_hours(instance_defaults, .8, hourly_df['CPUCreditBalance_Average'])
+    hourly_df['Burst_TTL_100'] = get_instance_ttl_hours(instance_defaults, 1, hourly_df['CPUCreditBalance_Average'])
+
+    # rename columns to save space on output
+    hourly_df.rename(columns={
+        'CPUUtilization_Average': 'CPU_Average',
+        'CPUCreditUsage_Sum': 'Credits_Used',
+        'CPUCreditBalance_Minimum': 'CrBalance_Min',
+        'CPUCreditBalance_Maximum': 'CrBalance_Max'
+    }, inplace=True)
+
+    return hourly_df
+
+
+def build_daily_df(cw_client, namespace, metrics, target_dimension_filter, daily_period, instance_defaults,
+                   start_time, end_time):
+    """
+    Get a metrics dataframe at daily grain
+
+    Args:
+        * cw_client (botocore.client.CloudWatch): Boto3 CloudWatch client
+        * namespace (str): AWS Metric namespace
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/aws-namespaces.html
+        * metrics (list of str): List of metric names
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
+        * dimension_filters (list of dict): List of Name/Value pairs for filtering metrics (e.g., instance id)
+            see https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ec2-metricscollected.html
+        * period (int): Grain of each observation (in seconds - e.g., 60 is one observation per minute)
+        * start_time (datetime): Datetime of first observation in series
+        * end_time (datetime): Datetime of last observation in series
+
+    Returns:
+        pandas.DataFrame.  Metrics dataframe at daily grain
+    """
+
+    # get a merged set of metrics by day + add computed items
+    daily_df = get_merged_metric_df(cw_client,
+                                    namespace,
+                                    metrics,
+                                    target_dimension_filter,
+                                    daily_period,
+                                    start_time,
+                                    end_time)
+
+    daily_df['Credits_Earned_Per_Day'] = instance_defaults['cpu_credits_per_hour'] * 24
+    daily_df['Credit_Net'] = daily_df['Credits_Earned_Per_Day'] - daily_df['CPUCreditUsage_Sum']
+
+    # rename columns to save space on output
+    daily_df.rename(columns={
+        'CPUUtilization_Average': 'CPU_Average',
+        'CPUCreditUsage_Sum': 'Credits_Used',
+        'CPUCreditBalance_Minimum': 'CrBalance_Min',
+        'CPUCreditBalance_Maximum': 'CrBalance_Max'
+    }, inplace=True)
+
+    return daily_df
 
 
 def get_t2_defaults():
