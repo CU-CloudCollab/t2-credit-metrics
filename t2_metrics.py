@@ -130,13 +130,11 @@ def build_t2_metrics_report_output(instance_profile, hourly_df, daily_df, aging_
                                   'Credit_Net',
                                   'CrBalance_Min',
                                   'CrBalance_Max',
-                                  'Burst_TTL_40',
-                                  'Burst_TTL_60',
                                   'Burst_TTL_80',
                                   'Burst_TTL_100'
                                   ]], headers='keys', tablefmt='psql', floatfmt=".2f") + '\n'
 
-    report += 'Burst Time-to-live (TTL) = Minutes at specified CPU utilization (40, 60, 80, 100) until \
+    report += 'Burst Time-to-live (TTL) = Minutes at specified CPU utilization (80, 100) until \
 burstable CPU credits will be expended.  Note: This calculation doesn not include initial credits.\n'
 
     report += '\n'
